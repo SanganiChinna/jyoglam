@@ -3,17 +3,50 @@ const mysql = require('mysql2');
 const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 1. SERVE IMAGES STATICALLY
+// 1. SERVE FRONTEND FILES (Render hosts both)
+app.use(express.static(__dirname)); 
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// 2. CONFIGURE STORAGE
+// 2. TiDB DATABASE CONNECTION
+const db = mysql.createConnection({
+    host: process.env.DB_HOST || 'gateway01.ap-southeast-1.prod.aws.tidbcloud.com',
+    user: process.env.DB_USER || '3Mj4FGNQXLxC3wd.root',
+    password: process.env.DB_PASSWORD || 'VlUMBWuYbgwri6up',
+    database: process.env.DB_NAME || 'test',
+    port: process.env.DB_PORT || 4000,
+    ssl: {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: true
+    }
+});
+
+function handleDisconnect() {
+    db.connect(err => {
+        if (err) {
+            console.error('❌ DB Connect Error:', err);
+            setTimeout(handleDisconnect, 2000);
+        } else {
+            console.log('✅ Connected to TiDB Cloud');
+        }
+    });
+    db.on('error', err => {
+        if (err.code === 'PROTOCOL_CONNECTION_LOST') handleDisconnect();
+        else throw err;
+    });
+}
+handleDisconnect();
+
+// 3. MULTER STORAGE
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
+        const dir = './uploads';
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir);
         cb(null, 'uploads/');
     },
     filename: (req, file, cb) => {
@@ -22,201 +55,103 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage: storage });
 
-// 3. DATABASE CONNECTION
-// 2. DATABASE CONNECTION (For Render + TiDB)
-const db = mysql.createConnection({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-    port: process.env.DB_PORT || 4000, // TiDB uses 4000
-    ssl: {
-        minVersion: 'TLSv1.2',
-        rejectUnauthorized: true
-    }
-});
+// ================= API ROUTES =================
 
-db.connect(err => {
-    if (err) console.error('❌ Error connecting to MySQL:', err);
-    else console.log('✅ Connected to MySQL Database');
-});
-
-// =================================================
-//                 PRODUCT ROUTES
-// =================================================
-
-// GET: Fetch All Products
+// PRODUCTS
 app.get('/api/products', (req, res) => {
-    const sql = 'SELECT * FROM products ORDER BY id DESC';
-    db.query(sql, (err, results) => {
+    db.query('SELECT * FROM products ORDER BY id DESC', (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(results);
     });
 });
 
-// GET: Fetch Single Product by ID
 app.get('/api/products/:id', (req, res) => {
-    const sql = 'SELECT * FROM products WHERE id = ?';
-    db.query(sql, [req.params.id], (err, result) => {
+    db.query('SELECT * FROM products WHERE id = ?', [req.params.id], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
-        if (result.length === 0) return res.status(404).json({ error: 'Product not found' });
-        res.json(result[0]);
+        res.json(result[0] || {});
     });
 });
 
-// POST: Add Product (Supports Multiple Images)
-// Important: 'images' matches the formData.append('images', ...) in admin.html
+// POST PRODUCT (Supports Multiple Images)
 app.post('/api/products', upload.array('images', 6), (req, res) => {
-    console.log("📥 Receiving Product Data with Multiple Images...");
-    
     const { name, type, price, old_price, stock, description } = req.body;
-    
-    // Handle Images
-    let mainImage = '';
-    let galleryJSON = '[]';
+    let mainImage = '', galleryJSON = '[]';
 
     if (req.files && req.files.length > 0) {
-        // The first image becomes the Main Thumbnail
-        mainImage = `http://localhost:3000/uploads/${req.files[0].filename}`;
-        
-        // All images go into the gallery list
-        const galleryPaths = req.files.map(file => `http://localhost:3000/uploads/${file.filename}`);
+        // Use relative path for production
+        mainImage = `uploads/${req.files[0].filename}`; 
+        const galleryPaths = req.files.map(file => `uploads/${file.filename}`);
         galleryJSON = JSON.stringify(galleryPaths);
     }
-
-    // Handle empty old_price
-    const finalOldPrice = (old_price === "" || old_price === undefined) ? null : old_price;
-
-    const sql = 'INSERT INTO products (name, type, price, old_price, stock, description, image_url, gallery) VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
     
+    const finalOldPrice = (old_price === "" || old_price === undefined) ? null : old_price;
+    const sql = 'INSERT INTO products (name, type, price, old_price, stock, description, image_url, gallery) VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
     db.query(sql, [name, type, price, finalOldPrice, stock, description, mainImage, galleryJSON], (err, result) => {
-        if (err) {
-            console.error("❌ Insert Error:", err.message);
-            return res.status(500).json({ error: err.message });
-        }
-        console.log("✅ Product Added. ID:", result.insertId);
-        res.json({ message: 'Product added successfully!' });
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ message: 'Saved' });
     });
 });
 
-// DELETE: Delete Product
 app.delete('/api/products/:id', (req, res) => {
-    const sql = 'DELETE FROM products WHERE id = ?';
-    db.query(sql, [req.params.id], (err, result) => {
+    db.query('DELETE FROM products WHERE id = ?', [req.params.id], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ message: 'Deleted' });
     });
 });
 
-// =================================================
-//                 HERO SECTION ROUTES
-// =================================================
-
-// GET: Fetch Hero Data
+// HERO SECTIONS
 app.get('/api/hero', (req, res) => {
-    db.query('SELECT * FROM hero_sections', (err, results) => {
+    db.query('SELECT * FROM hero_sections', (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
+        res.json(result);
     });
 });
 
-// POST: Update Hero Section
-// Note: Hero only needs 1 image, so we use upload.single('image')
 app.post('/api/hero/:id', upload.single('image'), (req, res) => {
-    const id = req.params.id;
     const { title, subtitle, currentImage } = req.body;
-    
-    const image_url = req.file ? `http://localhost:3000/uploads/${req.file.filename}` : currentImage;
-
+    const image_url = req.file ? `uploads/${req.file.filename}` : currentImage;
     const sql = 'UPDATE hero_sections SET title = ?, subtitle = ?, image_url = ? WHERE id = ?';
-    db.query(sql, [title, subtitle, image_url, id], (err, result) => {
+    db.query(sql, [title, subtitle, image_url, req.params.id], (err, resDB) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: 'Hero updated successfully!', newImage: image_url });
+        res.json({ message: 'Updated', newImage: image_url });
     });
 });
 
-
-// --- ORDER APIs ---
-
-// POST: Create a New Order
+// ORDERS
 app.post('/api/orders', (req, res) => {
     const { customer_name, phone, address, product_name, total_price } = req.body;
-    
     const sql = 'INSERT INTO orders (customer_name, phone, address, product_name, total_price) VALUES (?, ?, ?, ?, ?)';
-    
     db.query(sql, [customer_name, phone, address, product_name, total_price], (err, result) => {
-        if (err) {
-            console.error("❌ Order Error:", err.message);
-            return res.status(500).json({ error: err.message });
-        }
-        console.log("✅ New Order Received! ID:", result.insertId);
-        res.json({ message: 'Order placed successfully!', orderId: result.insertId });
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ message: 'Order Placed' });
     });
 });
 
-// GET: Fetch All Orders (For Admin Panel later)
 app.get('/api/orders', (req, res) => {
-    db.query('SELECT * FROM orders ORDER BY id DESC', (err, results) => {
+    db.query('SELECT * FROM orders ORDER BY id DESC', (err, resDB) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
+        res.json(resDB);
     });
 });
 
-
-// --- NEW: UPDATE ORDER STATUS ---
 app.put('/api/orders/:id', (req, res) => {
-    const { status } = req.body;
-    // Update the status in the database
-    const sql = 'UPDATE orders SET status = ? WHERE id = ?';
-    
-    db.query(sql, [status, req.params.id], (err, result) => {
-        if (err) {
-            console.error("❌ Status Update Error:", err.message);
-            return res.status(500).json({ error: err.message });
-        }
-        res.json({ message: 'Order status updated successfully' });
-    });
+    db.query('UPDATE orders SET status = ? WHERE id = ?', [req.body.status, req.params.id], (err) => res.json({ message: 'Updated' }));
 });
 
-// =================================================
-//                 ADMIN AUTH ROUTE
-// =================================================
-
-// POST: Login Check
+// AUTH
 app.post('/api/login', (req, res) => {
-    const { username, password } = req.body;
-    
-    // Check if user exists with that password
-    const sql = 'SELECT * FROM admin_users WHERE username = ? AND password = ?';
-    db.query(sql, [username, password], (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        
-        if (results.length > 0) {
-            res.json({ success: true, message: 'Login Successful' });
-        } else {
-            res.status(401).json({ success: false, message: 'Invalid Credentials' });
-        }
+    db.query('SELECT * FROM admin_users WHERE username = ? AND password = ?', [req.body.username, req.body.password], (err, results) => {
+        if (results.length > 0) res.json({ success: true });
+        else res.status(401).json({ success: false });
     });
 });
 
-// POST: Change Password
 app.post('/api/admin/password', (req, res) => {
-    const { newPassword } = req.body;
-    
-    // Update the password for the 'admin' user
-    const sql = 'UPDATE admin_users SET password = ? WHERE username = "admin"';
-    db.query(sql, [newPassword], (err, result) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ success: true, message: 'Password updated successfully' });
-    });
+    db.query('UPDATE admin_users SET password = ? WHERE username = "admin"', [req.body.newPassword], (err) => res.json({ success: true }));
 });
 
-// =================================================
-//                 START SERVER
-// =================================================
-const PORT = 3000;
+// 4. START SERVER
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 Server running on http://localhost:${PORT}`);
-
+    console.log(`🚀 Server running on port ${PORT}`);
 });
-
