@@ -24,10 +24,10 @@ const upload = multer({ storage: storage });
 
 // 3. DATABASE CONNECTION
 const db = mysql.createConnection({
-    host: 'localhost',
-    user: 'root',
-    password: 'password', // Empty for XAMPP
-    database: 'jyoglam_db'
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_DATABASE
 });
 
 db.connect(err => {
@@ -211,4 +211,5 @@ app.post('/api/admin/password', (req, res) => {
 const PORT = 3000;
 app.listen(PORT, () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);
+
 });
