@@ -23,11 +23,17 @@ const storage = multer.diskStorage({
 const upload = multer({ storage: storage });
 
 // 3. DATABASE CONNECTION
+// 2. DATABASE CONNECTION (For Render + TiDB)
 const db = mysql.createConnection({
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
-    database: process.env.DB_DATABASE
+    database: process.env.DB_NAME,
+    port: process.env.DB_PORT || 4000, // TiDB uses 4000
+    ssl: {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: true
+    }
 });
 
 db.connect(err => {
@@ -213,3 +219,4 @@ app.listen(PORT, () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);
 
 });
+
